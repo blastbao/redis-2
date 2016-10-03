@@ -2,8 +2,7 @@
  * to write code that can consume/produce data using different concrete input
  * and output devices. 
  *
- * RIO 是一个可以面向流、可用于对多种不同的输入
- * （目前是文件和内存字节）进行编程的抽象。
+ * RIO 是一个可以面向流、可用于对多种不同的输入（目前是文件和内存字节）进行编程的抽象。
  *
  * For instance the same rdb.c code using the rio
  * abstraction can be used to read and write the RDB format using in-memory
@@ -74,43 +73,28 @@
 #include "redis.h"
 
 /* Returns 1 or 0 for success/failure. 
- *
- * 将给定内容 buf 追加到缓存中，长度为 len 。
- *
+ * 将给定内容 buf 追加到r.buffer缓存中，长度为len。
  * 成功返回 1 ，失败返回 0 。
  */
 static size_t rioBufferWrite(rio *r, const void *buf, size_t len) {
-
-    // 追加
-    r->io.buffer.ptr = sdscatlen(r->io.buffer.ptr,(char*)buf,len);
-
-    // 更新偏移量
-    r->io.buffer.pos += len;
-
+    r->io.buffer.ptr = sdscatlen(r->io.buffer.ptr,(char*)buf,len); //追加cat  
+    r->io.buffer.pos += len;                                       //更新buffer.pos偏移
     return 1;
 }
 
 /* Returns 1 or 0 for success/failure. 
- *
- * 从 r 中读取长度为 len 的内容到 buf 中。
- *
+ * 从r.buffer中读取长度为 len 的内容到参数 buf 中。
  * 读取成功返回 1 ，否则返回 0 。
  */
 static size_t rioBufferRead(rio *r, void *buf, size_t len) {
-
-    // r 中的内容的长度不足 len 
-    if (sdslen(r->io.buffer.ptr)-r->io.buffer.pos < len)
-        return 0; /* not enough buffer to return len bytes. */
-    
-    // 复制 r 中的内容到 buf
-    memcpy(buf,r->io.buffer.ptr+r->io.buffer.pos,len);
+    if (sdslen(r->io.buffer.ptr) - r->io.buffer.pos < len)  //r.buffer中的内容的长度不足len 
+        return 0; 
+    memcpy(buf,r->io.buffer.ptr+r->io.buffer.pos,len);      //复制r.buffer中的内容到参数buf中
     r->io.buffer.pos += len;
-
     return 1;
 }
 
 /* Returns read/write position in buffer. 
- *
  * 返回缓存的当前偏移量
  */
 static off_t rioBufferTell(rio *r) {
@@ -118,20 +102,17 @@ static off_t rioBufferTell(rio *r) {
 }
 
 /* Returns 1 or 0 for success/failure. 
- *
- * 将长度为 len 的内容 buf 写入到文件 r 中。
- *
+ * 将长度为 len 的内容从 buf 写入到文件 r.file 中。
  * 成功返回 1 ，失败返回 0 。
  */
 static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
     size_t retval;
 
-    retval = fwrite(buf,len,1,r->io.file.fp);
-    r->io.file.buffered += len;
+    retval = fwrite(buf,len,1,r->io.file.fp);   //执行写入
+    r->io.file.buffered += len;                 //更新最近一次 fsync() 以来，写入的字节量
 
     // 检查写入的字节数，看是否需要执行自动 sync
-    if (r->io.file.autosync &&
-        r->io.file.buffered >= r->io.file.autosync)
+    if (r->io.file.autosync && r->io.file.buffered >= r->io.file.autosync)
     {
         fflush(r->io.file.fp);
         aof_fsync(fileno(r->io.file.fp));
@@ -141,10 +122,8 @@ static size_t rioFileWrite(rio *r, const void *buf, size_t len) {
     return retval;
 }
 
-/* Returns 1 or 0 for success/failure. */
-/*
- * 从文件 r 中读取 len 字节到 buf 中。
- *
+/* Returns 1 or 0 for success/failure. 
+ * 从文件 r.file 中读取 len 字节到参数 buf 中。
  * 返回值为读取的字节数。
  */
 static size_t rioFileRead(rio *r, void *buf, size_t len) {
@@ -152,7 +131,6 @@ static size_t rioFileRead(rio *r, void *buf, size_t len) {
 }
 
 /* Returns read/write position in file. 
- *
  * 返回文件当前的偏移量
  */
 static off_t rioFileTell(rio *r) {
@@ -163,12 +141,9 @@ static off_t rioFileTell(rio *r) {
  * 流为内存时所使用的结构
  */
 static const rio rioBufferIO = {
-    // 读函数
-    rioBufferRead,
-    // 写函数
-    rioBufferWrite,
-    // 偏移量函数
-    rioBufferTell,
+    rioBufferRead,  // Buffer读函数
+    rioBufferWrite, // Buffer写函数
+    rioBufferTell,  // Buffer偏移量函数
     NULL,           /* update_checksum */
     0,              /* current checksum */
     0,              /* bytes read or written */
@@ -180,12 +155,9 @@ static const rio rioBufferIO = {
  * 流为文件时所使用的结构
  */
 static const rio rioFileIO = {
-    // 读函数
-    rioFileRead,
-    // 写函数
-    rioFileWrite,
-    // 偏移量函数
-    rioFileTell,
+    rioFileRead,    // File读函数
+    rioFileWrite,   // File写函数
+    rioFileTell,    // File偏移量函数
     NULL,           /* update_checksum */
     0,              /* current checksum */
     0,              /* bytes read or written */
@@ -193,9 +165,7 @@ static const rio rioFileIO = {
     { { NULL, 0 } } /* union for io-specific vars */
 };
 
-/*
- * 初始化文件流
- */
+/* 初始化rio中的file变量 */
 void rioInitWithFile(rio *r, FILE *fp) {
     *r = rioFileIO;
     r->io.file.fp = fp;
@@ -203,42 +173,24 @@ void rioInitWithFile(rio *r, FILE *fp) {
     r->io.file.autosync = 0;
 }
 
-/*
- * 初始化内存流
- */
+/* 初始化rio中的buffer变量 */
 void rioInitWithBuffer(rio *r, sds s) {
     *r = rioBufferIO;
     r->io.buffer.ptr = s;
     r->io.buffer.pos = 0;
 }
 
-/* This function can be installed both in memory and file streams when checksum
- * computation is needed. */
-/*
- * 通用校验和计算函数
- */
+
+/* 计算校验和用的是循环冗余校验算法 */
 void rioGenericUpdateChecksum(rio *r, const void *buf, size_t len) {
     r->cksum = crc64(r->cksum,buf,len);
 }
 
-/* Set the file-based rio object to auto-fsync every 'bytes' file written.
- *
- * 每次通过 rio 写入 bytes 指定的字节数量时，执行一次自动的 fsync 。
- *
- * By default this is set to zero that means no automatic file sync is
- * performed.
- *
+/* 每次通过 rio 写入 bytes 指定的字节数量时，执行一次自动的 fsync 。
  * 默认情况下， bytes 被设为 0 ，表示不执行自动 fsync 。 
  *
- * This feature is useful in a few contexts since when we rely on OS write
- * buffers sometimes the OS buffers way too much, resulting in too many
- * disk I/O concentrated in very little time. When we fsync in an explicit
- * way instead the I/O pressure is more distributed across time. 
- *
- * 这个函数是为了防止一次写入过多内容而设置的。
- *
- * 通过显示地、间隔性地调用 fsync ，
- * 可以将写入的 I/O 压力分担到多次 fsync 调用中。
+ * 这个函数是为了防止一次写入过多内容而设置的，通过显示地、间隔性地
+ * 调用 fsync ，可以将写入的 I/O 压力分担到多次 fsync 调用中。
  */
 void rioSetAutoSync(rio *r, off_t bytes) {
     redisAssert(r->read == rioFileIO.read);
@@ -252,6 +204,7 @@ void rioSetAutoSync(rio *r, off_t bytes) {
  * 以下高层函数通过调用前面的底层函数来生成 AOF 文件所需的协议
  */
 
+
 /* Write multi bulk count in the format: "*<count>\r\n". */
 /*
  * 以带 '\r\n' 后缀的形式写入字符串表示的 count 到 RIO 
@@ -262,18 +215,17 @@ size_t rioWriteBulkCount(rio *r, char prefix, int count) {
     char cbuf[128];
     int clen;
 
-    // cbuf = prefix ++ count ++ '\r\n'
-    // 例如： *123\r\n
+    // cbuf = prefix + count + '\r\n'，例如：*123\r\n
     cbuf[0] = prefix;
-    clen = 1+ll2string(cbuf+1,sizeof(cbuf)-1,count);
+    clen    = 1 + ll2string(cbuf+1,sizeof(cbuf)-1,count);
     cbuf[clen++] = '\r';
     cbuf[clen++] = '\n';
 
-    // 写入
-    if (rioWrite(r,cbuf,clen) == 0) return 0;
-
-    // 返回写入字节数
-    return clen;
+    // 调用rioWrite函数将数据cbuf[]写入到r中，rioWrite会调用r内部的write函数，
+    // 而该函数具体是写file还是buffer，就被屏蔽掉了。
+    if (rioWrite(r,cbuf,clen) == 0) 
+        return 0;
+    return clen;    // 返回写入字节数
 }
 
 /* Write binary-safe string in the format: "$<count>\r\n<payload>\r\n". 

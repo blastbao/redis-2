@@ -571,7 +571,8 @@ int sdsll2str(char *s, long long value) {
         *p++ = '0'+(v%10);
         v /= 10;
     } while(v);
-    if (value < 0) *p++ = '-';
+    if (value < 0) 
+        *p++ = '-';
 
     /* Compute length and add null term. */
     l = p-s;

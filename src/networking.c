@@ -266,7 +266,8 @@ int _addReplyToBuffer(redisClient *c, char *s, size_t len) {
     size_t available = sizeof(c->buf)-c->bufpos;
 
     // 正准备关闭客户端，无须再发送内容
-    if (c->flags & REDIS_CLOSE_AFTER_REPLY) return REDIS_OK;
+    if (c->flags & REDIS_CLOSE_AFTER_REPLY) 
+        return REDIS_OK;
 
     /* If there already are entries in the reply list, we cannot
      * add anything more to the static buffer. */
@@ -428,6 +429,7 @@ void addReply(redisClient *c, robj *obj) {
             // 如果 c->buf 中的空间不够，就复制到 c->reply 链表中
             // 可能会引起内存分配
             _addReplyObjectToList(c,obj);
+        
     } else if (obj->encoding == REDIS_ENCODING_INT) {
         /* Optimization: if there is room in the static buffer for 32 bytes
          * (more than the max chars a 64 bit integer can take as string) we
@@ -1296,6 +1298,27 @@ static void setProtocolError(redisClient *c, int pos) {
  * argv[1] = MSG
  * argv[2] = HELLO
  */
+
+/*
+首先对redis的命令协议进行简要介绍，以下是这个协议的一般形式：  
+*<参数数量>CRLF  
+$<参数1的字节数量>CRLF  
+<参数1的数据>CRLF  
+...
+$<参数N的字节数量>CRLF  
+<参数N的数据>CRLF  
+...
+
+举个例子，以下是一个命令协议的打印版本：  
+*3  
+$3  
+SET  
+$3  
+foo  
+$3  
+bar  
+这个命令的实际协议值如下："*3\r\n$3\r\nSET\r\n$3\r\foo\r\n$3\r\bar\r\n"  
+*/
 int processMultibulkBuffer(redisClient *c) {
     char *newline = NULL;
     int pos = 0, ok;
@@ -1613,11 +1636,11 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
         return;
     }
 
-    // 查询缓冲区长度超出服务器最大缓冲区长度
-    // 清空缓冲区并释放客户端
+
+    // 判断查询缓冲区长度是否超出服务器最大缓冲区长度client_max_querybuf_len（1GB），
+    // 如果超过，会拒绝服务，清空缓冲区并释放客户端。
     if (sdslen(c->querybuf) > server.client_max_querybuf_len) {
         sds ci = catClientInfoString(sdsempty(),c), bytes = sdsempty();
-
         bytes = sdscatrepr(bytes,c->querybuf,64);
         redisLog(REDIS_WARNING,"Closing client that reached max query buffer length: %s (qbuf initial bytes: %s)", ci, bytes);
         sdsfree(ci);

@@ -45,84 +45,80 @@ struct _rio {
      * Since this functions do not tolerate short writes or reads the return
      * value is simplified to: zero on error, non zero on complete success. */
     // API
-    size_t (*read)(struct _rio *, void *buf, size_t len);
-    size_t (*write)(struct _rio *, const void *buf, size_t len);
-    off_t (*tell)(struct _rio *);
+    size_t (*read)(struct _rio *, void *buf, size_t len);           /* 数据流的读方法 */
+    size_t (*write)(struct _rio *, const void *buf, size_t len);    /* 数据流的写方法 */
+    off_t  (*tell)(struct _rio *);                                  /* 获取当前的读写偏移量 */
 
     /* The update_cksum method if not NULL is used to compute the checksum of
      * all the data that was read or written so far. The method should be
      * designed so that can be called with the current checksum, and the buf
      * and len fields pointing to the new block of data to add to the checksum
      * computation. */
-    // 校验和计算函数，每次有写入/读取新数据时都要计算一次
+    /* 校验和计算函数：当写入/读取新的数据块的时候，会更新当前的校验和 */
     void (*update_cksum)(struct _rio *, const void *buf, size_t len);
 
-    /* The current checksum */
-    // 当前校验和
+    /* The current checksum 当前校验和*/
     uint64_t cksum;
 
-    /* number of bytes read or written */
+    /* number of bytes read or written  当前读取的或写入的字节大小 */
     size_t processed_bytes;
 
-    /* maximum single read or write chunk size */
+    /* maximum single read or write chunk size 最大的单次读写的大小 */
     size_t max_processing_chunk;
 
-    /* Backend-specific vars. */
+    /* Backend-specific vars. rio中I/O变量*/
     union {
 
         struct {
-            // 缓存指针
-            sds ptr;
-            // 偏移量
-            off_t pos;
+            sds ptr;    // 缓存的具体内容
+            off_t pos;  // 偏移量
         } buffer;
 
         struct {
-            // 被打开文件的指针
-            FILE *fp;
-            // 最近一次 fsync() 以来，写入的字节量
-            off_t buffered; /* Bytes written since last fsync. */
-            // 写入多少字节之后，才会自动执行一次 fsync()
-            off_t autosync; /* fsync after 'autosync' bytes written. */
+            
+            FILE *fp;       // 被打开文件的指针        
+            off_t buffered; // 最近一次 fsync() 以来，写入的字节量
+            off_t autosync; // 写入多少字节之后，才会自动执行一次 fsync()
         } file;
     } io;
 };
 
 typedef struct _rio rio;
 
+
+
+
 /* The following functions are our interface with the stream. They'll call the
  * actual implementation of read / write / tell, and will update the checksum
  * if needed. */
-
-/*
- * 将 buf 中的 len 字节写入到 r 中。
- *
- * 写入成功返回实际写入的字节数，写入失败返回 -1 。
+ /*
+ * 将 buf 中的 len 字节写入到 r 中。写入成功返回实际写入的字节数，写入失败返回-1 。
  */
 static inline size_t rioWrite(rio *r, const void *buf, size_t len) {
     while (len) {
-        size_t bytes_to_write = (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-        if (r->update_cksum) r->update_cksum(r,buf,bytes_to_write);
-        if (r->write(r,buf,bytes_to_write) == 0)
+        //判断当前操作字节长度是否超过最大长度
+        size_t bytes_to_write = (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len; 
+        if (r->update_cksum)                        //写入新的数据时，更新校验和
+            r->update_cksum(r,buf,bytes_to_write);
+        if (r->write(r,buf,bytes_to_write) == 0)    //执行写方法
             return 0;
         buf = (char*)buf + bytes_to_write;
         len -= bytes_to_write;
-        r->processed_bytes += bytes_to_write;
+        r->processed_bytes += bytes_to_write;       //操作字节数增加
     }
     return 1;
 }
-
 /*
- * 从 r 中读取 len 字节，并将内容保存到 buf 中。
- *
- * 读取成功返回 1 ，失败返回 0 。
+ * 从 r 中读取 len 字节，并将内容保存到 buf 中。读取成功返回 1 ，失败返回 0 。
  */
 static inline size_t rioRead(rio *r, void *buf, size_t len) {
     while (len) {
+        //判断当前操作字节长度是否超过最大长度
         size_t bytes_to_read = (r->max_processing_chunk && r->max_processing_chunk < len) ? r->max_processing_chunk : len;
-        if (r->read(r,buf,bytes_to_read) == 0)
+        if (r->read(r,buf,bytes_to_read) == 0)  //读数据方法
             return 0;
-        if (r->update_cksum) r->update_cksum(r,buf,bytes_to_read);
+        if (r->update_cksum)                    //读数据时，更新校验和
+            r->update_cksum(r,buf,bytes_to_read);
         buf = (char*)buf + bytes_to_read;
         len -= bytes_to_read;
         r->processed_bytes += bytes_to_read;

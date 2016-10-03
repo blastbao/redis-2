@@ -128,13 +128,10 @@ slowlogEntry *slowlogCreateEntry(robj **argv, int argc, long long duration) {
 void slowlogFreeEntry(void *septr) {
     slowlogEntry *se = septr;
     int j;
-
     // 释放参数
     for (j = 0; j < se->argc; j++)
         decrRefCount(se->argv[j]);
-
     zfree(se->argv);
-
     zfree(se);
 }
 
@@ -178,7 +175,7 @@ void slowlogPushEntryIfNeeded(robj **argv, int argc, long long duration) {
         listAddNodeHead(server.slowlog,slowlogCreateEntry(argv,argc,duration));
 
     /* Remove old entries if needed. */
-    // 如果日志数量过多，那么进行删除
+    // 如果日志数量过多，那么进行删除，删除链表尾节点（先插入）
     while (listLength(server.slowlog) > server.slowlog_max_len)
         listDelNode(server.slowlog,listLast(server.slowlog));
 }
@@ -209,8 +206,7 @@ void slowlogCommand(redisClient *c) {
         addReplyLongLong(c,listLength(server.slowlog));
 
     // 获取某条或者全部日志
-    } else if ((c->argc == 2 || c->argc == 3) &&
-               !strcasecmp(c->argv[1]->ptr,"get"))
+    } else if ((c->argc == 2 || c->argc == 3) && !strcasecmp(c->argv[1]->ptr,"get"))
     {
         long count = 10, sent = 0;
         listIter li;
@@ -218,8 +214,7 @@ void slowlogCommand(redisClient *c) {
         listNode *ln;
         slowlogEntry *se;
 
-        if (c->argc == 3 &&
-            getLongFromObjectOrReply(c,c->argv[2],&count,NULL) != REDIS_OK)
+        if (c->argc == 3 && getLongFromObjectOrReply(c,c->argv[2],&count,NULL) != REDIS_OK)
             return;
 
         // 遍历日志，取出指定数量的日志
