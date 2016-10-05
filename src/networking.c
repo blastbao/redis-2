@@ -1188,7 +1188,7 @@ void resetClient(redisClient *c) {
 /*
  * 处理内联命令，并创建参数对象
  *
- * 内联命令的各个参数以空格分开，并以 \r\n 结尾
+ * ！！！内联命令的各个参数以空格分开，并以 \r\n 结尾
  * 例子：
  *
  * <arg0> <arg1> <arg...> <argN>\r\n
@@ -1207,10 +1207,12 @@ int processInlineBuffer(redisClient *c) {
     size_t querylen;
 
     /* Search for end of line */
+    //inline协议都是以\r\n结束一行命令的，所以直接以\n划分出字符串newline。
     newline = strchr(c->querybuf,'\n');
+    //char *newline = strstr(c->querybuf,"\r\n"); //查找第一个\r\n的位置
 
     /* Nothing to do without a \r\n */
-    // 收到的查询内容不符合协议格式，出错
+    // 收到的查询内容不符合协议格式，出错。
     if (newline == NULL) {
         if (sdslen(c->querybuf) > REDIS_INLINE_MAX_SIZE) {
             addReplyError(c,"Protocol error: too big inline request");
@@ -1231,7 +1233,9 @@ int processInlineBuffer(redisClient *c) {
     // argv[2] = hello
     // argc = 3
     querylen = newline-(c->querybuf);
-    aux = sdsnewlen(c->querybuf,querylen);
+    //将querylen长度的字符串重新初始化成一个sds数据结构体
+    aux  = sdsnewlen(c->querybuf,querylen);
+    //以空白字符分割字符串aux，返回一个分割后结果数组。
     argv = sdssplitargs(aux,&argc);
     sdsfree(aux);
     if (argv == NULL) {
@@ -1248,13 +1252,13 @@ int processInlineBuffer(redisClient *c) {
 
     /* Leave data after the first line of the query in the buffer */
 
-    // 从缓冲区中删除已 argv 已读取的内容
-    // 剩余的内容是未读取的
+    // 从缓冲区中删除已 argv 已读取的内容，剩余的内容是未读取的
     sdsrange(c->querybuf,querylen+2,-1);
 
     /* Setup argv array on client structure */
     // 为客户端的参数分配空间
-    if (c->argv) zfree(c->argv);
+    if (c->argv) 
+        zfree(c->argv);
     c->argv = zmalloc(sizeof(robj*)*argc);
 
     /* Create redis objects for all arguments. */
@@ -1318,6 +1322,15 @@ foo
 $3  
 bar  
 这个命令的实际协议值如下："*3\r\n$3\r\nSET\r\n$3\r\foo\r\n$3\r\bar\r\n"  
+
+
+那么下面的代码就非常好理解了：
+    首先解析'*'后面的字符串转成long long类型，这样就知道了参数的个数。
+    接着遍历参数个数解析$后面的数字为参数的长度，并且读取参数。
+    最后，类似processInlineBuffer，将参数存入到了client的argv数组中。
+
+经过以上几个步骤，querybuf中的数据算是解析完了。
+最后，外部的processInputBuffer函数将会调用processCommand函数来处理解析完毕的命令行参数。
 */
 int processMultibulkBuffer(redisClient *c) {
     char *newline = NULL;
@@ -1493,7 +1506,8 @@ int processMultibulkBuffer(redisClient *c) {
 
     /* Trim to pos */
     // 从 querybuf 中删除已被读取的内容
-    if (pos) sdsrange(c->querybuf,pos,-1);
+    if (pos) 
+        sdsrange(c->querybuf,pos,-1);
 
     /* We're done when c->multibulk == 0 */
     // 如果本条命令的所有参数都已读取完，那么返回
@@ -1544,7 +1558,7 @@ void processInputBuffer(redisClient *c) {
             }
         }
 
-        // 将缓冲区中的内容转换成命令，以及命令参数
+        // 将缓冲区中的内容解析成命令及参数，存入c->args和c->argc中。
         if (c->reqtype == REDIS_REQ_INLINE) {
             if (processInlineBuffer(c) != REDIS_OK) break;
         } else if (c->reqtype == REDIS_REQ_MULTIBULK) {
@@ -1657,8 +1671,7 @@ void readQueryFromClient(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 // 获取客户端目前最大的一块缓冲区的大小
-void getClientsMaxBuffers(unsigned long *longest_output_list,
-                          unsigned long *biggest_input_buffer) {
+void getClientsMaxBuffers(unsigned long *longest_output_list, unsigned long *biggest_input_buffer) {
     redisClient *c;
     listNode *ln;
     listIter li;
@@ -1668,10 +1681,12 @@ void getClientsMaxBuffers(unsigned long *longest_output_list,
     while ((ln = listNext(&li)) != NULL) {
         c = listNodeValue(ln);
 
-        if (listLength(c->reply) > lol) lol = listLength(c->reply);
-        if (sdslen(c->querybuf) > bib) bib = sdslen(c->querybuf);
+        if (listLength(c->reply) > lol) 
+            lol = listLength(c->reply);
+        if (sdslen(c->querybuf) > bib) 
+            bib = sdslen(c->querybuf);
     }
-    *longest_output_list = lol;
+    *longest_output_list  = lol;
     *biggest_input_buffer = bib;
 }
 

@@ -32,7 +32,24 @@
 /*-----------------------------------------------------------------------------
  * Pubsub low level API
  *----------------------------------------------------------------------------*/
+void freePubsubPattern(void *p) /* 释放发布订阅的模式 */
+int listMatchPubsubPattern(void *a, void *b) /* 发布订阅模式是否匹配 */
+int clientSubscriptionsCount(redisClient *c) /* 返回客户端的所订阅的数量，包括channels + patterns管道和模式 */
+int pubsubSubscribeChannel(redisClient *c, robj *channel) /* Client订阅一个Channel管道 */
+int pubsubUnsubscribeChannel(redisClient *c, robj *channel, int notify) /* 取消订阅Client中的Channel */
+int pubsubSubscribePattern(redisClient *c, robj *pattern) /* Client客户端订阅一种模式 */
+int pubsubUnsubscribePattern(redisClient *c, robj *pattern, int notify) /* Client客户端取消订阅pattern模式 */
+int pubsubUnsubscribeAllChannels(redisClient *c, int notify) /* 客户端取消自身订阅的所有Channel */
+int pubsubUnsubscribeAllPatterns(redisClient *c, int notify) /* 客户端取消订阅所有的pattern模式 */
+int pubsubPublishMessage(robj *channel, robj *message) /* 为所有订阅了Channel的Client发送消息message */
 
+/* ------------PUB/SUB API ---------------- */
+void subscribeCommand(redisClient *c) /* 订阅Channel的命令 */
+void unsubscribeCommand(redisClient *c) /* 取消订阅Channel的命令 */
+void psubscribeCommand(redisClient *c) /* 订阅模式命令 */
+void punsubscribeCommand(redisClient *c) /* 取消订阅模式命令 */
+void publishCommand(redisClient *c) /* 发布消息命令 */
+void pubsubCommand(redisClient *c) /* 发布订阅命令 */
 /*
  * 释放给定的模式 p
  */
@@ -56,7 +73,7 @@ int listMatchPubsubPattern(void *a, void *b) {
 /* Subscribe a client to a channel. Returns 1 if the operation succeeded, or
  * 0 if the client was already subscribed to that channel. 
  *
- * 设置客户端 c 订阅频道 channel 。
+ * 设置客户端 c 订阅频道 channel （非模式pattern）。
  *
  * 订阅成功返回 1 ，如果客户端已经订阅了该频道，那么返回 0 。
  */
@@ -65,22 +82,31 @@ int pubsubSubscribeChannel(redisClient *c, robj *channel) {
     list *clients = NULL;
     int retval = 0;
 
+    // redisClient.pubsub_channels 中保存客户端订阅的所有频道，以具体的频道名为key，
+    // 而value为NULL。因此使用该字典能够快速判断客户端是否订阅了某频道。
+    // 
+    // server.pubsub_channels 中保存所有的频道和每个频道的订阅客户端，以具体的频
+    // 道名为key，而value是一个列表，该列表中记录了订阅该频道的所有客户端。当向
+    // 某频道发布消息时，就是通过查询该字典，将消息发送给订阅该频道的所有客户端。
+
+
     /* Add the channel to the client -> channels hash table */
-    // 将 channels 填接到 c->pubsub_channels 的集合中（值为 NULL 的字典视为集合）
+    // 将 channels 频道添加到 redisClient->pubsub_channels 的集合中（值为 NULL 的字典视为集合）
     if (dictAdd(c->pubsub_channels,channel,NULL) == DICT_OK) {
         retval = 1;
         incrRefCount(channel);
 
-        // 关联示意图
+        // 在服务器server维护的channel->clients 哈希表server.pubsub_channels中寻找指定的频道channel,
+        // 来获取到 保存着所有订阅 channel 频道的客户端client的链表，如果不存在订阅channel的client链
+        // 表，就创建一个空链表并将当前客户端添加进去。
+        // 
+        // server.pubsub_channels的关联示意图：
         // {
         //  频道名        订阅频道的客户端
         //  'channel-a' : [c1, c2, c3],
         //  'channel-b' : [c5, c2, c1],
         //  'channel-c' : [c10, c2, c1]
         // }
-        /* Add the client to the channel -> list of clients hash table */
-        // 从 pubsub_channels 字典中取出保存着所有订阅了 channel 的客户端的链表
-        // 如果 channel 不存在于字典，那么添加进去
         de = dictFind(server.pubsub_channels,channel);
         if (de == NULL) {
             clients = listCreate();
@@ -90,29 +116,29 @@ int pubsubSubscribeChannel(redisClient *c, robj *channel) {
             clients = dictGetVal(de);
         }
 
+        // 将当前客户端 c 添加到channel链表的尾部：
         // before:
-        // 'channel' : [c1, c2]
+        //   'channel' : [c1, c2]
         // after:
-        // 'channel' : [c1, c2, c3]
-        // 将客户端添加到链表的末尾
+        //   'channel' : [c1, c2, c]
         listAddNodeTail(clients,c);
     }
 
+
     /* Notify the client */
-    // 回复客户端。
+    // 通知客户端。
     // 示例：
     // redis 127.0.0.1:6379> SUBSCRIBE xxx
     // Reading messages... (press Ctrl-C to quit)
     // 1) "subscribe"
     // 2) "xxx"
     // 3) (integer) 1
-    addReply(c,shared.mbulkhdr[3]);
-    // "subscribe\n" 字符串
-    addReply(c,shared.subscribebulk);
-    // 被订阅的客户端
-    addReplyBulk(c,channel);
+    // 
+    addReply(c,shared.mbulkhdr[3]);     //输出"*3\r\n"
+    addReply(c,shared.subscribebulk);   //输出“$9\r\nsubscribe\r\n”
+    addReplyBulk(c,channel);            //将频道名称封装成"$4\r\ntest\r\n"形式
     // 客户端订阅的频道和模式总数
-    addReplyLongLong(c,dictSize(c->pubsub_channels)+listLength(c->pubsub_patterns));
+    addReplyLongLong(c, dictSize(c->pubsub_channels) + listLength(c->pubsub_patterns));
 
     return retval;
 }
@@ -146,13 +172,16 @@ int pubsubUnsubscribeChannel(redisClient *c, robj *channel, int notify) {
     //  'channel-x': NULL,
     //  'channel-z': NULL,
     // }
+    
+
+    // 将频道 channel 从 client->pubsub_channels 字典中移除
     if (dictDelete(c->pubsub_channels,channel) == DICT_OK) {
 
         // channel 移除成功，表示客户端订阅了这个频道，执行以下代码
 
         retval = 1;
         /* Remove the client from the channel -> clients list hash table */
-        // 从 channel->clients 的 clients 链表中，移除 client 
+        // 从server.pubsub_channels获取channel->clients 链表，从中移除 client.
         // 示意图：
         // before:
         // {
@@ -162,24 +191,32 @@ int pubsubUnsubscribeChannel(redisClient *c, robj *channel, int notify) {
         // {
         //  'channel-x' : [c1, c3]
         // }
-        de = dictFind(server.pubsub_channels,channel);
-        redisAssertWithInfo(c,NULL,de != NULL);
-        clients = dictGetVal(de);
-        ln = listSearchKey(clients,c);
-        redisAssertWithInfo(c,NULL,ln != NULL);
-        listDelNode(clients,ln);
+        de = dictFind(server.pubsub_channels,channel);  //根据channel从dict定位到list
+        redisAssertWithInfo(c,NULL,de != NULL);         //判断de不空
+        clients = dictGetVal(de);                       //获取该list
+        ln = listSearchKey(clients,c);                  //从list定位到client node
+        redisAssertWithInfo(c,NULL,ln != NULL);         //判断client node不空
+        listDelNode(clients,ln);                        //从链表中删除该client node
 
-        // 如果移除 client 之后链表为空，那么删除这个 channel 键
+
+        // 如果移除 client 之后链表为空，那么删除这个 channel 键。
         // 示意图：
+        // 
         // before
         // {
         //  'channel-x' : [c1]
         // }
+        // 
         // after c1 ubsubscribe channel-x
+        // {
+        //  'channel-x' : []
+        // }
+        // 
         // then also delete 'channel-x' key in dict
         // {
         //  // nothing here
         // }
+        // 
         if (listLength(clients) == 0) {
             /* Free the list and associated hash entry at all if this was
              * the latest client, so that it will be possible to abuse
@@ -191,14 +228,12 @@ int pubsubUnsubscribeChannel(redisClient *c, robj *channel, int notify) {
     /* Notify the client */
     // 回复客户端
     if (notify) {
-        addReply(c,shared.mbulkhdr[3]);
-        // "ubsubscribe" 字符串
-        addReply(c,shared.unsubscribebulk);
-        // 被退订的频道
-        addReplyBulk(c,channel);
+
+        addReply(c,shared.mbulkhdr[3]);     //输出"*3\r\n"
+        addReply(c,shared.unsubscribebulk); //输出“$9\r\nsubscribe\r\n”
+        addReplyBulk(c,channel);            //将频道名称封装成"$4\r\ntest\r\n"形式
         // 退订频道之后客户端仍在订阅的频道和模式的总数
-        addReplyLongLong(c,dictSize(c->pubsub_channels)+
-                       listLength(c->pubsub_patterns));
+        addReplyLongLong(c, dictSize(c->pubsub_channels) + listLength(c->pubsub_patterns));
 
     }
 
@@ -209,37 +244,43 @@ int pubsubUnsubscribeChannel(redisClient *c, robj *channel, int notify) {
 
 /* Subscribe a client to a pattern. Returns 1 if the operation succeeded, or 0 if the client was already subscribed to that pattern. 
  *
- * 设置客户端 c 订阅模式 pattern 。
+ * 设置客户端 c 订阅模式 pattern 频道。
  *
  * 订阅成功返回 1 ，如果客户端已经订阅了该模式，那么返回 0 。
  */
 int pubsubSubscribePattern(redisClient *c, robj *pattern) {
     int retval = 0;
 
-    // 在链表中查找模式，看客户端是否已经订阅了这个模式
+
+    // redisClient.pubsub_patterns 中保存客户端订阅的所有模式频道，可以查看
+    // 客户端订阅了多少频道以及客户端是否订阅某个频道
+    // 
+    // server.pubsub_patterns 中保存所有的模式频道和每个模式频道的订阅客户端
+    // ，可以将消息发布到订阅客户端
+
+
+
+    // 在链表中查找模式pattern，看客户端是否已经订阅了这个模式。
     // 这里为什么不像 channel 那样，用字典来进行检测呢？
-    // 虽然 pattern 的数量一般来说并不多
+    // 因为pattern时需要逐个检测是否匹配的，用list比较合适。
     if (listSearchKey(c->pubsub_patterns,pattern) == NULL) {
         
-        // 如果没有的话，执行以下代码
+        //如果Client->pubsub_patterns中没有订阅pattern，则进行添加。
 
         retval = 1;
-
         pubsubPattern *pat;
 
-        // 将 pattern 添加到 c->pubsub_patterns 链表中
+        // 将 pattern 添加到 c->pubsub_patterns 链表中。
         listAddNodeTail(c->pubsub_patterns,pattern);
-
         incrRefCount(pattern);
-
         // 创建并设置新的 pubsubPattern 结构
         pat = zmalloc(sizeof(*pat));
         pat->pattern = getDecodedObject(pattern);
-        pat->client = c;
-
-        // 添加到末尾
+        pat->client  = c;
+        // 添加到server.pubsub_patterns链表末尾
         listAddNodeTail(server.pubsub_patterns,pat);
     }
+
 
     /* Notify the client */
     // 回复客户端。
@@ -249,13 +290,11 @@ int pubsubSubscribePattern(redisClient *c, robj *pattern) {
     // 1) "psubscribe"
     // 2) "xxx*"
     // 3) (integer) 1
+    
     addReply(c,shared.mbulkhdr[3]);
-    // 回复 "psubscribe" 字符串
     addReply(c,shared.psubscribebulk);
-    // 回复被订阅的模式
     addReplyBulk(c,pattern);
-    // 回复客户端订阅的频道和模式的总数
-    addReplyLongLong(c,dictSize(c->pubsub_channels)+listLength(c->pubsub_patterns));
+    addReplyLongLong(c, dictSize(c->pubsub_channels) + listLength(c->pubsub_patterns));
 
     return retval;
 }
@@ -295,13 +334,9 @@ int pubsubUnsubscribePattern(redisClient *c, robj *pattern, int notify) {
     // 回复客户端
     if (notify) {
         addReply(c,shared.mbulkhdr[3]);
-        // "punsubscribe" 字符串
         addReply(c,shared.punsubscribebulk);
-        // 被退订的模式
         addReplyBulk(c,pattern);
-        // 退订频道之后客户端仍在订阅的频道和模式的总数
-        addReplyLongLong(c,dictSize(c->pubsub_channels)+
-                       listLength(c->pubsub_patterns));
+        addReplyLongLong(c,dictSize(c->pubsub_channels)+listLength(c->pubsub_patterns));
     }
 
     decrRefCount(pattern);
@@ -326,7 +361,6 @@ int pubsubUnsubscribeAllChannels(redisClient *c, int notify) {
     // 退订
     while((de = dictNext(di)) != NULL) {
         robj *channel = dictGetKey(de);
-
         count += pubsubUnsubscribeChannel(c,channel,notify);
     }
 
@@ -337,8 +371,7 @@ int pubsubUnsubscribeAllChannels(redisClient *c, int notify) {
         addReply(c,shared.mbulkhdr[3]);
         addReply(c,shared.unsubscribebulk);
         addReply(c,shared.nullbulk);
-        addReplyLongLong(c,dictSize(c->pubsub_channels)+
-                       listLength(c->pubsub_patterns));
+        addReplyLongLong(c,dictSize(c->pubsub_channels)+listLength(c->pubsub_patterns));
     }
 
     dictReleaseIterator(di);
@@ -375,8 +408,7 @@ int pubsubUnsubscribeAllPatterns(redisClient *c, int notify) {
         addReply(c,shared.mbulkhdr[3]);
         addReply(c,shared.punsubscribebulk);
         addReply(c,shared.nullbulk);
-        addReplyLongLong(c,dictSize(c->pubsub_channels)+
-                       listLength(c->pubsub_patterns));
+        addReplyLongLong(c,dictSize(c->pubsub_channels)+ listLength(c->pubsub_patterns));
     }
 
     // 退订总数
@@ -385,8 +417,12 @@ int pubsubUnsubscribeAllPatterns(redisClient *c, int notify) {
 
 /* Publish a message 
  *
- * 将 message 发送到所有订阅频道 channel 的客户端，
- * 以及所有订阅了和 channel 频道匹配的模式的客户端。
+ *使用 PUBLISH 命令向订阅者发送消息，需要执行以下两个步骤： 　　
+ *  1) 使用给定的频道作为键，在 redisServer.pubsub_channels 字典中查找记录了订阅
+ *      这个频道的所有客户端clients的链表，遍历这个链表，将消息发布给所有订阅者。
+ *       　　
+ *  2) 遍历 redisServer.pubsub_patterns 链表，将链表中的模式和给定的频道进行匹配，
+ *      如果匹配成功，那么将消息发布到相应模式的客户端当中。
  */
 int pubsubPublishMessage(robj *channel, robj *message) {
     int receivers = 0;
@@ -395,8 +431,7 @@ int pubsubPublishMessage(robj *channel, robj *message) {
     listIter li;
 
     /* Send to clients listening for that channel */
-    // 取出包含所有订阅频道 channel 的客户端的链表
-    // 并将消息发送给它们
+    // 取出频道 channel 的订阅客户端的链表，并将消息发送给其中clients。
     de = dictFind(server.pubsub_channels,channel);
     if (de) {
         list *list = dictGetVal(de);
@@ -410,16 +445,13 @@ int pubsubPublishMessage(robj *channel, robj *message) {
 
             // 回复客户端。
             // 示例：
-            // 1) "message"
-            // 2) "xxx"
-            // 3) "hello"
-            addReply(c,shared.mbulkhdr[3]);
-            // "message" 字符串
-            addReply(c,shared.messagebulk);
-            // 消息的来源频道
-            addReplyBulk(c,channel);
-            // 消息内容
-            addReplyBulk(c,message);
+            //   1) "message"
+            //   2) "test"
+            //   3) "hello"
+            addReply(c,shared.mbulkhdr[3]); //输出"$5\r\nhello\r\n"
+            addReply(c,shared.messagebulk); //输出"$7\r\nmessage\r\n"
+            addReplyBulk(c,channel);        //输出"$4\r\ntest\r\n"
+            addReplyBulk(c,message);        //输出"$5\r\nhello\r\n"
 
             // 接收客户端计数
             receivers++;
@@ -440,10 +472,8 @@ int pubsubPublishMessage(robj *channel, robj *message) {
 
             // 如果 channel 和 pattern 匹配
             // 就给所有订阅该 pattern 的客户端发送消息
-            if (stringmatchlen((char*)pat->pattern->ptr,
-                                sdslen(pat->pattern->ptr),
-                                (char*)channel->ptr,
-                                sdslen(channel->ptr),0)) {
+            if (stringmatchlen((char*)pat->pattern->ptr, sdslen(pat->pattern->ptr),
+                               (char*)channel->ptr, sdslen(channel->ptr),0)) {
 
                 // 回复客户端
                 // 示例：
@@ -453,19 +483,17 @@ int pubsubPublishMessage(robj *channel, robj *message) {
                 // 4) "hello"
                 addReply(pat->client,shared.mbulkhdr[4]);
                 addReply(pat->client,shared.pmessagebulk);
-                addReplyBulk(pat->client,pat->pattern);
-                addReplyBulk(pat->client,channel);
-                addReplyBulk(pat->client,message);
-
-                // 对接收消息的客户端进行计数
-                receivers++;
+                addReplyBulk(pat->client,pat->pattern);     //打印匹配的pattern
+                addReplyBulk(pat->client,channel);          //打印频道号
+                addReplyBulk(pat->client,message);          //打印消息
+                receivers++;                                //对接收消息的客户端进行+1计数
             }
         }
 
-        decrRefCount(channel);
+        decrRefCount(channel);  //释放用过的channle
     }
 
-    // 返回计数
+    // 返回接收的client计数
     return receivers;
 }
 
@@ -491,11 +519,14 @@ void unsubscribeCommand(redisClient *c) {
     }
 }
 
+//当客户端发来PSUBSCRIBE命令之后，函数psubscribeCommand对命令参数中每个频道模式pattern
+//进行订阅。通过调用函数pubsubSubscribePattern，修改server和client中相应的数据结构，完
+//成订阅操作。最后，向客户端标志位中增加REDIS_PUBSUB标记，表示该客户端进入订阅模式。
 void psubscribeCommand(redisClient *c) {
     int j;
-
     for (j = 1; j < c->argc; j++)
         pubsubSubscribePattern(c,c->argv[j]);
+    c->flags |= REDIS_PUBSUB;  
 }
 
 void punsubscribeCommand(redisClient *c) {
@@ -509,22 +540,41 @@ void punsubscribeCommand(redisClient *c) {
     }
 }
 
+//当客户端向Redis服务器发送”PUBLISH <channel>  <message>”命令后，
+//Redis服务器会将消息<message>发送给所有订阅了<channel>的客户端，
+//以及那些订阅了与<channel>相匹配的频道模式的客户端。
+//
+//
+//函数中，首先调用pubsubPublishMessage函数，将message发布到相应的频道；
+//
+//然后，如果当前Redis处于集群模式下，则调用clusterPropagatePublish函数，向所有集群节点广播该消息；
+//否则，调用forceCommandPropagation函数，向客户端c的标志位中增加REDIS_FORCE_REPL标记，以便后续能
+//将该PUBLISH命令传递给从节点；
+//
+//最后，将接收消息的客户端个数回复给客户端c；
+//
 void publishCommand(redisClient *c) {
 
-    int receivers = pubsubPublishMessage(c->argv[1],c->argv[2]);
+    //c->argv[1]为频道的名称，c->argv[2]为消息对象。下面函数就是将消息发送给所有订
+    //阅频道的客户端，返回订阅该频道的客户端总数。
+    int receivers = pubsubPublishMessage(c->argv[1],c->argv[2]); 
+
     if (server.cluster_enabled)
         clusterPropagatePublish(c->argv[1],c->argv[2]);
     else
         forceCommandPropagation(c,REDIS_PROPAGATE_REPL);
+    
+    //给调用publish命令的客户端发送订阅c->argv[1]频道的客户端数。
     addReplyLongLong(c,receivers);
 }
 
+
 /* PUBSUB command for Pub/Sub introspection. */
+/* 发布订阅命令 */
 void pubsubCommand(redisClient *c) {
 
     // PUBSUB CHANNELS [pattern] 子命令
-    if (!strcasecmp(c->argv[1]->ptr,"channels") &&
-        (c->argc == 2 || c->argc ==3))
+    if (!strcasecmp(c->argv[1]->ptr,"channels") && (c->argc == 2 || c->argc ==3))
     {
         /* PUBSUB CHANNELS [<pattern>] */
         // 检查命令请求是否给定了 pattern 参数
